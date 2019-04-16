@@ -3,58 +3,41 @@ import os
 from dotenv import load_dotenv
 import pprint
 import random
-VERSION_API = 5.92
+import DB
+from time import sleep
+BASE_URL_VK = 'https://api.vk.com/method/'
+VERSION_API = 5.95
 
 
-#TODO Изменить метод UNAUTHORIZED for url
-#def get_users_dm(access_token):
-#    url = 'https://discordapp.com/api/users/@me/channels'
-#    header = {'Authorization': 'Bearer {}'.format(access_token)}
-#    response = requests.get(url, headers=header)
-#    response.raise_for_status()
-#    pprint.pprint(response.json())
-#    return response.json()
-
-
-def get_user_object(access_token):
-    url = 'https://discordapp.com/api/users/@me'
-    header = {'Authorization': 'Bearer {}'.format(access_token)}
-    response = requests.get(url, headers=header)
-    response.raise_for_status()
-    pprint.pprint(response.json())
+def get_user_object(user_id, access_token):
+    url = f'{BASE_URL_VK}users.get'
+    params = {'user_ids': user_id,
+              'access_token': access_token,
+              'v': VERSION_API}
+    response = requests.get(url, params=params)
     return response.json()
 
 
-def get_discord_access_token(client_id, client_secret, redirect_uri, code):
-    data = {
-        'client_id': int(client_id),
-        'client_secret': client_secret,
-        'grant_type': 'authorization_code',
-        'code': code,
-        'redirect_uri': redirect_uri,
-        'scope': 'gdm.join messages.read identify'
-    }
-    headers = {
-        'Content-Type': 'application/x-www-form-urlencoded'
-    }
-    r = requests.post('https://discordapp.com/api/oauth2/token', data, headers)
-    pprint.pprint(r.json())
-    return r.json()
+def join_longpoll_server(server, key, ts):
+    url = f'{server}?act=a_check&key={key}&ts={ts}&wait=25'
+    response = requests.get(url)
+    pprint.pprint(response.json())
+    return response.json()['ts'], response.json()
 
 
 def get_longpoll_server(access_token, group_id):
-    url = "https://api.vk.com/method/groups.getLongPollServer"
+    url = f"{BASE_URL_VK}groups.getLongPollServer"
     params = {'group_id': group_id,
               'access_token': access_token,
               'v': VERSION_API,
               }
     response = requests.get(url, params=params)
-    pprint.pprint(response.json())
+    print('Подключено')
     return response.json()['response']['key'], response.json()['response']['server'], response.json()['response']['ts']
 
 
-def send_message(message: str,  group_id: str, access_token, domain: str, attachment=None, user_id: int=0, ):
-    url = "https://api.vk.com/method/messages.send"
+def send_message(message: str,  group_id: str, access_token, domain: str = '', attachment=None, user_id: int=0, ):
+    url = f"{BASE_URL_VK}messages.send"
     if attachment is None:
         params = {'message': message,
                   'random_id': random.randint(1, 100000000),
@@ -68,7 +51,7 @@ def send_message(message: str,  group_id: str, access_token, domain: str, attach
                   'attachment': attachment,
                   'access_token': access_token,
                   'v': VERSION_API}
-    if user_id != 0 and domain is None:
+    if user_id != 0:
         params['user_id'] = user_id
     else:
         params['domain'] = domain
@@ -78,19 +61,32 @@ def send_message(message: str,  group_id: str, access_token, domain: str, attach
 
 def main():
     load_dotenv(".env")
-    vk_token = os.getenv('vk_token')
     vk_group_token = os.getenv('vk_group_token')
     vk_group_id = os.getenv('vk_group_id')
-    discord_client_id = os.getenv('discord_client_id')
-    discord_client_secret = os.getenv('discord_client_secret_token')
-    discord_code = os.getenv('discord_code')
-    redirect_uri = 'https://discordapp.com/api/oauth2/token'
-    #answer = send_message("Тест", vk_group_id, vk_group_token, domain='chutchevv')
-    access_token_answer = get_discord_access_token(discord_client_id, discord_client_secret, redirect_uri, discord_code)
-    user_object = get_user_object(access_token_answer['access_token'])
-    #users_dm = get_users_dm(access_token_answer['access_token'])
-    #key, server, ts = get_longpoll_server(vk_group_token, vk_group_id)
-    #pprint.pprint(answer)
+    key, server, ts = get_longpoll_server(vk_group_token, vk_group_id)
+    ts, answer = join_longpoll_server(server, key, ts)
+    try:
+        answer_message = send_message("Приветствую Вас! Продолжайте в том же духе. Напиши как к вам обращаться",
+                                      vk_group_id, vk_group_token,
+                                      user_id=int(answer['updates'][0]['object']['user_id']))
+    except KeyError:
+        pass
+    while True:
+        ts, answer = join_longpoll_server(server, key, ts)
+        try:
+            data = answer['updates'][0]['object']
+            user = get_user_object(data['peer_id'], vk_group_token)
+            user = user['response'][0]
+            if answer['updates'][0]['type'] == 'message_new':
+                message = data['text']
+                DB.insert_DB(user, message)
+            nickname = DB.select_DB(user)
+            answer_message = send_message(
+                f"{nickname[3]}, вы молодец! Продолжайте в том же духе. Напиши как к вам обращаться",
+                vk_group_id, vk_group_token,
+                user_id=int(data['from_id']))
+        except IndexError:
+            pass
 
 
 if __name__ == '__main__':
